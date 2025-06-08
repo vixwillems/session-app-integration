@@ -1,221 +1,109 @@
 blueprint:
-  name: Ulanzi Stopwatch Controller
-  description: Display stopwatch on Ulanzi clock with toggle controls and blinking break mode.
+  name: Matrix Clock Stopwatch Controller
+  description: >
+    Displays a stopwatch in HH:MM format on a Ulanzi Matrix Clock when a session is started
+    and stops it when the session is ended.
   domain: automation
-  author: ChatGPT
   input:
-    awtrix_device:
-      name: AWTRIX Device
-      selector:
-        device:
-          integration: mqtt
-          manufacturer: Blueforcer
-
-    app_name:
-      name: App Name
-      default: Stopwatch
-      selector:
-        text:
-
-    start_session:
-      name: Start Session Toggle
+    session_helper:
+      name: Session Toggle
+      description: Input boolean for starting a session
       selector:
         entity:
           domain: input_boolean
 
-    pause_session:
-      name: Pause Session Toggle
+    break_helper:
+      name: Break Toggle
+      description: Input boolean for starting a break
       selector:
         entity:
           domain: input_boolean
 
-    unpause_session:
-      name: Unpause Session Toggle
+    matrix_clock:
+      name: Matrix Clock
+      description: The Ulanzi Matrix Clock display
       selector:
         entity:
-          domain: input_boolean
+          domain: text
 
-    end_session:
-      name: End Session Toggle
+    stopwatch_started:
+      name: Stopwatch Start Time
+      description: input_datetime entity to track the start of the session
       selector:
         entity:
-          domain: input_boolean
+          domain: input_datetime
 
-    break_start:
-      name: Break Start Toggle
-      selector:
-        entity:
-          domain: input_boolean
-
-    break_end:
-      name: Break End Toggle
-      selector:
-        entity:
-          domain: input_boolean
-
-    stop_app:
-      name: Stop App Toggle
-      selector:
-        entity:
-          domain: input_boolean
-
-    session_color:
-      name: Session Color (RGB Hex)
-      default: "#00FF00"
-      selector:
-        color_rgb:
-
-    break_color:
-      name: Break Color (RGB Hex)
-      default: "#FFA500"
-      selector:
-        color_rgb:
-
-mode: parallel
-max: 10
-
-variables:
-  device_topic: "{{ states((device_entities(awtrix_device) | select('search', 'device_topic') | list)[0]) }}"
-  app_topic: "{{ device_topic }}/custom/{{ app_name }}"
-  switch_topic: "{{ device_topic }}/switch"
-  notify_topic: "{{ device_topic }}/notify"
+mode: restart
 
 trigger:
   - platform: state
-    entity_id:
-      - !input start_session
-      - !input pause_session
-      - !input unpause_session
-      - !input end_session
-      - !input break_start
-      - !input break_end
-      - !input stop_app
-    to: "on"
+    entity_id: !input session_helper
+    to: 'on'
+  - platform: state
+    entity_id: !input break_helper
+    to: 'on'
+  - platform: state
+    entity_id: !input session_helper
+    to: 'off'
+  - platform: state
+    entity_id: !input break_helper
+    to: 'off'
 
 variables:
-  stopwatch_started: "{{ now() }}"
-  elapsed: 0
-  break_mode: false
+  session_helper: !input session_helper
+  break_helper: !input break_helper
+  matrix_clock: !input matrix_clock
+  stopwatch_started: !input stopwatch_started
+
+condition: []
 
 action:
   - choose:
       - conditions:
           - condition: state
-            entity_id: !input start_session
-            state: "on"
+            entity_id: !input session_helper
+            state: 'on'
         sequence:
-          - variables:
-              stopwatch_started: "{{ now() }}"
-          - service: input_boolean.turn_off
+          - service: input_datetime.set_datetime
             target:
-              entity_id: !input start_session
+              entity_id: !input stopwatch_started
+            data:
+              datetime: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
           - repeat:
+              while:
+                - condition: state
+                  entity_id: !input session_helper
+                  state: 'on'
               sequence:
                 - variables:
-                    elapsed: "{{ (now() - stopwatch_started).seconds }}"
-                - service: mqtt.publish
+                    elapsed: >
+                      {{ (now().timestamp() - as_timestamp(states(stopwatch_started))) | int }}
+                    hours: "{{ (elapsed // 3600) | int }}"
+                    minutes: "{{ ((elapsed % 3600) // 60) | int }}"
+                    time_string: >
+                      {{ '%02d:%02d' | format(hours, minutes) }}
+                - service: text.set_value
+                  target:
+                    entity_id: !input matrix_clock
                   data:
-                    topic: "{{ app_topic }}"
-                    payload: >-
-                      {{ dict(
-                        text = elapsed | timestamp_custom('%-H:%M', False),
-                        color = session_color,
-                        icon = "",
-                        progress = 0
-                      ) | tojson }}
-                - delay: "00:00:01"
-              while:
-                - condition: template
-                  value_template: >-
-                    {{ not is_state('input_boolean.pause_session', 'on') and
-                       not is_state('input_boolean.end_session', 'on') and
-                       not is_state('input_boolean.break_start', 'on') and
-                       not is_state('input_boolean.stop_app', 'on') }}
+                    value: "⏱️ {{ time_string }}"
+                - delay:
+                    seconds: 10
 
       - conditions:
           - condition: state
-            entity_id: !input pause_session
-            state: "on"
+            entity_id: !input break_helper
+            state: 'on'
         sequence:
-          - service: input_boolean.turn_off
+          - service: text.set_value
             target:
-              entity_id: !input pause_session
-
-      - conditions:
-          - condition: state
-            entity_id: !input unpause_session
-            state: "on"
-        sequence:
-          - service: input_boolean.turn_off
-            target:
-              entity_id: !input unpause_session
-
-      - conditions:
-          - condition: state
-            entity_id: !input end_session
-            state: "on"
-        sequence:
-          - service: input_boolean.turn_off
-            target:
-              entity_id: !input end_session
-          - service: mqtt.publish
+              entity_id: !input matrix_clock
             data:
-              topic: "{{ app_topic }}"
-              payload: "{{ dict(text='00:00', color=session_color, icon='') | tojson }}"
+              value: "💤 Break"
 
-      - conditions:
-          - condition: state
-            entity_id: !input break_start
-            state: "on"
-        sequence:
-          - variables:
-              break_started: "{{ now() }}"
-          - service: input_boolean.turn_off
-            target:
-              entity_id: !input break_start
-          - repeat:
-              sequence:
-                - variables:
-                    elapsed: "{{ (now() - break_started).seconds }}"
-                - service: mqtt.publish
-                  data:
-                    topic: "{{ app_topic }}"
-                    payload: >-
-                      {{ dict(
-                        text = elapsed | timestamp_custom('%-H:%M', False) if (elapsed % 2 == 0) else '',
-                        color = break_color,
-                        icon = "",
-                        progress = 0
-                      ) | tojson }}
-                - delay: "00:00:01"
-              while:
-                - condition: template
-                  value_template: >-
-                    {{ not is_state('input_boolean.break_end', 'on') and
-                       not is_state('input_boolean.stop_app', 'on') }}
-
-      - conditions:
-          - condition: state
-            entity_id: !input break_end
-            state: "on"
-        sequence:
-          - service: input_boolean.turn_off
-            target:
-              entity_id: !input break_end
-          - service: mqtt.publish
-            data:
-              topic: "{{ app_topic }}"
-              payload: "{{ dict(text='00:00', color=break_color, icon='') | tojson }}"
-
-      - conditions:
-          - condition: state
-            entity_id: !input stop_app
-            state: "on"
-        sequence:
-          - service: input_boolean.turn_off
-            target:
-              entity_id: !input stop_app
-          - service: mqtt.publish
-            data:
-              topic: "{{ switch_topic }}"
-              payload: "{{ dict(name='') | tojson }}"
+    default:
+      - service: text.set_value
+        target:
+          entity_id: !input matrix_clock
+        data:
+          value: ""
