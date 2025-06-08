@@ -1,191 +1,109 @@
 blueprint:
-  name: Matrix Clock Stopwatch Control
-  description: Display a stopwatch (H:M) on a Ulanzi Matrix Clock when toggles are used
+  name: Matrix Clock Stopwatch Controller
+  description: Controls stopwatch display on Ulanzi Matrix Clock using toggles and break/session states.
   domain: automation
-  author: ChatGPT
   input:
-    ulanzi_clock:
-      name: Ulanzi Matrix Clock
-      description: The MQTT-connected Ulanzi Matrix Clock device
+    ulanzi_device:
+      name: Ulanzi Device
+      description: The Ulanzi Matrix Clock device (MQTT-based)
       selector:
         device:
           integration: mqtt
-          manufacturer: Blueforcer
-
     session_toggle:
-      name: Session Toggle
-      description: Input boolean to toggle the session on/off
+      name: Session Start Toggle
       selector:
         entity:
           domain: input_boolean
-
     pause_toggle:
-      name: Pause Session Toggle
-      description: Input boolean to pause the session
+      name: Pause Toggle
       selector:
         entity:
           domain: input_boolean
-
     unpause_toggle:
-      name: Unpause Session Toggle
-      description: Input boolean to unpause the session
+      name: Unpause Toggle
       selector:
         entity:
           domain: input_boolean
-
-    end_session_toggle:
+    end_toggle:
       name: End Session Toggle
-      description: Input boolean to end the session
       selector:
         entity:
           domain: input_boolean
-
     break_toggle:
-      name: Start Break Toggle
-      description: Input boolean to start break
+      name: Break Start Toggle
       selector:
         entity:
           domain: input_boolean
-
-    end_break_toggle:
-      name: End Break Toggle
-      description: Input boolean to end break
+    break_end_toggle:
+      name: Break End Toggle
       selector:
         entity:
           domain: input_boolean
-
     stop_app_toggle:
       name: Stop App Toggle
-      description: Input boolean to stop app display
       selector:
         entity:
           domain: input_boolean
-
     session_color:
-      name: Session Text Color
-      default: "#00FF00"
+      name: Session Color (RGB)
       selector:
         color_rgb:
-
     break_color:
-      name: Break Text Color
-      default: "#FFAA00"
+      name: Break Color (RGB)
       selector:
         color_rgb:
-
     session_start_time:
-      name: Stopwatch Start Time
-      description: Internal input_datetime to store when the stopwatch starts
+      name: Session Start Time (input_datetime)
+      description: A helper to store when the session or break started
       selector:
         entity:
           domain: input_datetime
-          multiple: false
-
-trigger:
-  - platform: state
-    entity_id:
-      - !input session_toggle
-      - !input pause_toggle
-      - !input unpause_toggle
-      - !input end_session_toggle
-      - !input break_toggle
-      - !input end_break_toggle
-      - !input stop_app_toggle
-
+mode: single
 variables:
-  ulanzi_device: !input ulanzi_clock
-  clock_topic: >-
-    {{ states((device_entities(ulanzi_device) | select('search', 'device_topic') | list)[0]) }}/custom/Stopwatch
-  start_time: "{{ states('input_datetime.session_start_time') }}"
-  now_ts: "{{ now().timestamp() }}"
-
+  ulanzi_topic: "{{ states((device_entities(ulanzi_device) | select('search', 'device_topic') | list)[0]) }}/custom/stopwatch"
+  now_ts: "{{ as_timestamp(now()) }}"
 action:
   - choose:
       - conditions:
           - condition: state
             entity_id: !input session_toggle
-            state: 'on'
+            state: "on"
         sequence:
           - service: input_datetime.set_datetime
             data:
-              timestamp: "{{ now().timestamp() }}"
+              timestamp: "{{ now_ts }}"
             target:
               entity_id: !input session_start_time
           - service: mqtt.publish
             data:
-              topic: "{{ clock_topic }}"
+              topic: "{{ ulanzi_topic }}"
               payload: >
-                {{ dict(text="00:00", color=(!input session_color)) | to_json }}
-
-      - conditions:
-          - condition: state
-            entity_id: !input pause_toggle
-            state: 'on'
-        sequence:
-          - service: mqtt.publish
-            data:
-              topic: "{{ clock_topic }}"
-              payload: >
-                {{ dict(text="Paused", color="#AAAAAA") | to_json }}
-
-      - conditions:
-          - condition: state
-            entity_id: !input unpause_toggle
-            state: 'on'
-        sequence:
-          - service: mqtt.publish
-            data:
-              topic: "{{ clock_topic }}"
-              payload: >
-                {{ dict(text="Unpaused", color=(!input session_color)) | to_json }}
-
-      - conditions:
-          - condition: state
-            entity_id: !input end_session_toggle
-            state: 'on'
-        sequence:
-          - service: mqtt.publish
-            data:
-              topic: "{{ clock_topic }}"
-              payload: >
-                {{ dict(text="Session Ended", color="#FF0000") | to_json }}
-
+                {{ dict(text="00:00", color=session_color) | to_json }}
       - conditions:
           - condition: state
             entity_id: !input break_toggle
-            state: 'on'
+            state: "on"
         sequence:
           - service: input_datetime.set_datetime
             data:
-              timestamp: "{{ now().timestamp() }}"
+              timestamp: "{{ now_ts }}"
             target:
               entity_id: !input session_start_time
           - service: mqtt.publish
             data:
-              topic: "{{ clock_topic }}"
+              topic: "{{ ulanzi_topic }}"
               payload: >
-                {{ dict(text="Break 00:00", color=(!input break_color), blink=True) | to_json }}
-
-      - conditions:
-          - condition: state
-            entity_id: !input end_break_toggle
-            state: 'on'
-        sequence:
-          - service: mqtt.publish
-            data:
-              topic: "{{ clock_topic }}"
-              payload: >
-                {{ dict(text="Break Over", color="#00AAFF") | to_json }}
-
+                {{ dict(text="00:00", color=break_color, blink=True) | to_json }}
       - conditions:
           - condition: state
             entity_id: !input stop_app_toggle
-            state: 'on'
+            state: "on"
         sequence:
           - service: mqtt.publish
             data:
-              topic: "{{ clock_topic }}"
-              payload: >
-                {{ dict(text="", color="#000000") | to_json }}
-
-mode: single
+              topic: "{{ ulanzi_topic }}"
+              payload: "{\"text\":\"\",\"color\":[0,0,0]}"
+          - delay: 1
+          - service: input_boolean.turn_off
+            target:
+              entity_id: !input stop_app_toggle
